@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pulse oximeter</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+
+<div class="wrap">
+  <header>
+    <h1>Pulse oximeter</h1>
+    <select id="device" aria-label="Device"></select>
+    <span class="spacer"></span>
+    <span class="chip" id="devState" data-state="offline"><span class="dot"></span><span id="devStateText">no device</span></span>
+    <span class="chip" id="wsState" data-state="offline"><span class="dot"></span><span id="wsStateText">connecting</span></span>
+  </header>
+
+  <section class="tiles">
+    <div class="tile pulse" id="tileBpm">
+      <span class="label">Heart rate</span>
+      <span class="value">--<span class="unit">bpm</span></span>
+      <span class="note" id="bpmNote">waiting for a finger</span>
+    </div>
+    <div class="tile oxygen" id="tileSpo2">
+      <span class="label">SpO<sub>2</sub></span>
+      <span class="value">--<span class="unit">%</span></span>
+      <span class="note">uncalibrated</span>
+    </div>
+    <div class="tile" id="tilePi">
+      <span class="label">Perfusion index</span>
+      <span class="value small">--<span class="unit">%</span></span>
+      <span class="note">pulse strength (AC/DC)</span>
+    </div>
+    <div class="tile" id="tileConf">
+      <span class="label">Beat agreement</span>
+      <span class="value small">--<span class="unit">%</span></span>
+      <span class="note">interval consistency</span>
+    </div>
+    <div class="tile" id="tileR">
+      <span class="label">Ratio R</span>
+      <span class="value small">--</span>
+      <span class="note">red/IR, SpO<sub>2</sub> is derived from this</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Pleth &mdash; infrared</h2>
+    <p class="sub">Band-passed IR channel at 100&nbsp;Hz, newest on the right. Ten seconds shown.</p>
+    <canvas id="wave" height="180"></canvas>
+  </section>
+
+  <div class="ranges" role="group" aria-label="History range">
+    <span>History</span>
+    <button data-min="10" aria-pressed="true">10 min</button>
+    <button data-min="60" aria-pressed="false">1 hour</button>
+    <button data-min="360" aria-pressed="false">6 hours</button>
+    <button data-min="1440" aria-pressed="false">24 hours</button>
+    <span class="spacer"></span>
+    <span id="rangeNote"></span>
+  </div>
+
+  <section class="charts">
+    <div class="card">
+      <h2>Heart rate</h2>
+      <p class="sub">Beats per minute, averaged per bucket. Gaps are finger-off.</p>
+      <canvas id="chartBpm" height="200"></canvas>
+      <div class="tip" id="tipBpm"></div>
+    </div>
+    <div class="card">
+      <h2>Blood oxygen</h2>
+      <p class="sub">SpO<sub>2</sub> percent, same buckets.</p>
+      <canvas id="chartSpo2" height="200"></canvas>
+      <div class="tip" id="tipSpo2"></div>
+    </div>
+  </section>
+
+  <details>
+    <summary>Data table &mdash; the same history, without colour</summary>
+    <table id="table">
+      <thead><tr><th>Time</th><th>BPM</th><th>SpO<sub>2</sub> %</th><th>PI %</th><th>Agreement %</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </details>
+
+  <footer>
+    Not a medical device. SpO<sub>2</sub> comes from an uncalibrated ratio-of-ratios
+    curve and is useful for trends only.
+  </footer>
+</div>
+
+<script src="/app.js"></script>

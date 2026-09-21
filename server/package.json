@@ -1,0 +1,19 @@
+{
+  "name": "pulseox-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MQTT -> SQLite -> WebSocket bridge and dashboard host for the MAX30102 pulse oximeter",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/index.js",
+    "simulate": "node tools/simulate.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1",
+    "ws": "^8.18.0"
+  }
+}

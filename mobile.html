@@ -1,0 +1,463 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>rPPG Capture</title>
+<style>
+  :root{--lamp:255;--lr:255;--lg:255;--lb:255}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{background:rgb(var(--lr),var(--lg),var(--lb));color:#111;
+       font:14px/1.45 system-ui,sans-serif;display:flex;flex-direction:column;
+       align-items:center;gap:10px;padding:10px}
+  #bpm{font-size:17vw;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;
+       color:#999;transition:color .3s}
+  #bpm.ok{color:#0a7}
+  #sub{font-size:12px;color:#555;margin-top:-6px}
+  #stage{position:relative;width:min(70vw,300px);aspect-ratio:3/4;
+         border-radius:12px;overflow:hidden;background:#000}
+  video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mir,-1))}
+  .row{display:flex;gap:8px;align-items:center;width:min(94vw,430px);font-size:12px}
+  .lamp{display:flex;gap:6px;flex:1}
+  .lamp button{flex:1;padding:9px;border:1px solid #0002;border-radius:8px;
+               font-size:12px;font-weight:600;background:#fff}
+  .lamp button.on{background:#0a7;color:#fff;border-color:#085}
+  input[type=range]{flex:1}
+  #msg{width:min(94vw,430px);padding:9px;border-radius:9px;text-align:center;
+       font-weight:700;background:#0001;font-size:13px}
+  #msg.ok{background:#0a7;color:#fff}
+  #stat{font-family:ui-monospace,monospace;font-size:10.5px;color:#666;
+        width:min(94vw,430px);white-space:pre-wrap}
+</style>
+
+<div id="bpm">--</div>
+<div id="sub">BPM</div>
+<div id="stage"><video id="v" playsinline muted autoplay></video></div>
+<div id="msg">starting camera&hellip;</div>
+<div class="row">brightness <input type="range" id="lampv" min="120" max="255" value="255"></div>
+<div class="row"><div class="lamp">
+  <button id="bBack">Back cam</button>
+  <button id="bFront">Front cam</button>
+  <button id="bTorch">Torch</button>
+</div></div>
+<div class="row"><div class="lamp">
+  <button data-c="255,255,255" style="background:#fff">White</button>
+  <button data-c="120,255,140" style="background:#78ff8c">Green</button>
+  <button data-c="255,120,120" style="background:#ff7878">Red</button>
+</div></div>
+<div id="stat"></div>
+
+<script src="/dsp.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const V=$('v');
+let W=480,H=640; const DW=96,DH=128;
+const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+const cx=cv.getContext('2d',{willReadFrequently:true});
+cx.imageSmoothingEnabled=true; cx.imageSmoothingQuality='high';
+const dv=document.createElement('canvas'); dv.width=DW; dv.height=DH;
+const dx=dv.getContext('2d',{willReadFrequently:true});
+const fc=document.createElement('canvas'); fc.width=320; fc.height=240;   // stream frame
+const fx=fc.getContext('2d');
+const say=m=>$('stat').textContent=m;
+window.onerror=(m,s,l)=>say('ERR '+m+' @'+l);
+
+// ---- screen as a lamp. Green illumination is not decoration: haemoglobin
+// absorbs strongly near 540 nm, so green light raises the pulse SNR.
+let LAMP=[255,255,255], LAMPV=255;
+function applyLamp(){
+  const k=LAMPV/255, r=document.documentElement.style;
+  r.setProperty('--lr',Math.round(LAMP[0]*k));
+  r.setProperty('--lg',Math.round(LAMP[1]*k));
+  r.setProperty('--lb',Math.round(LAMP[2]*k));
+}
+$('lampv').oninput=e=>{ LAMPV=+e.target.value; applyLamp(); };
+document.querySelectorAll('.lamp button').forEach(b=>{
+  b.onclick=()=>{ LAMP=b.dataset.c.split(',').map(Number); applyLamp(); };
+});
+applyLamp();
+
+// ---- face tracking -------------------------------------------------------
+let BOX=null, PATCH=[], KP=null, FD=null, MASKS=[], maskAt=0;
+const ANA_H=640;        // 2x reduction: bilinear still averages honestly here
+let FL=null, MESH=null, lastMesh=0;
+const MESH_MS=200;  // 5 Hz tracking; the camera and DSP run free
+// FaceMesh landmark groups. BlazeFace gives 6 keypoints, so the ROI had to be
+// guessed from inter-eye distance; the mesh's 468 points bound the forehead and
+// cheeks directly, which keeps the patches on skin during head movement.
+
+async function loadFD(){
+  try{
+    const M=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    const vis=await M.FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    try{
+      FL=await M.FaceLandmarker.createFromOptions(vis,{
+        baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/'
+          +'face_landmarker/face_landmarker/float16/1/face_landmarker.task'},
+        runningMode:'VIDEO', numFaces:1});
+      say('face mesh ready (468 landmarks)');
+    }catch(e){ say('mesh unavailable, using BlazeFace'); }
+    FD=await M.FaceDetector.createFromOptions(vis,{
+      baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/'
+        +'face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'},
+      runningMode:'VIDEO', minDetectionConfidence:0.5});
+  }catch(e){ say('detector unavailable ('+e.name+'), colour fallback'); }
+}
+
+// Anchor the patches on mesh landmarks but SIZE them as fractions of face
+// width. Taking the bounding box of a landmark group gave patches ~4x too
+// small, and SNR from spatial averaging falls as sqrt(pixels).
+function patchesFromMesh(lm){
+  const L=lm[234], R=lm[454];                       // face sides
+  const faceW = Math.abs(R.x - L.x) || 0.2;
+  const eyeY  = (lm[33].y + lm[263].y)/2;           // eye line
+  const browY = lm[10].y;                           // top of forehead
+  const foreH = Math.max(0.02, (eyeY - browY));
+
+  const clamp=([x,y,w,h])=>[Math.max(0,Math.min(1-w,x)),Math.max(0,Math.min(1-h,y)),w,h];
+
+  // forehead: centred on the brow midpoint, wide, between hairline and brows
+  const fw = faceW*0.52, fh = foreH*0.42;
+  const fcx = (lm[67].x + lm[297].x)/2;
+  const fore = [fcx - fw/2, browY + foreH*0.28, fw, fh];
+
+  // cheeks: centred on the cheek landmarks, square-ish and generous
+  const cw = faceW*0.26, ch = faceW*0.22;
+  const lc = [lm[50].x  - cw/2, lm[50].y  - ch/2, cw, ch];
+  const rc = [lm[280].x - cw/2, lm[280].y - ch/2, cw, ch];
+  return [clamp(fore), clamp(lc), clamp(rc)];
+}
+
+// Everything is sized in units of the inter-eye distance, so placement is
+// scale invariant. cyE is the eye line; the forehead sits ABOVE it.
+function patchesFromLandmarks(kp){
+  const rE=kp[0], lE=kp[1];
+  const cxE=(rE.x+lE.x)/2, cyE=(rE.y+lE.y)/2;
+  const d=Math.hypot(lE.x-rE.x, lE.y-rE.y)||0.1;
+  const fw=d*1.45, fh=d*0.62, cw=d*0.72, ch=d*0.62;
+  return [[cxE-fw/2, cyE-d*1.15, fw, fh],
+          [rE.x-cw/2, cyE+d*0.55, cw, ch],
+          [lE.x-cw/2, cyE+d*0.55, cw, ch]]
+    .map(([x,y,w,h])=>[Math.max(0,Math.min(1-w,x)),Math.max(0,Math.min(1-h,y)),w,h]);
+}
+function detectSkinBox(){
+  dx.drawImage(V,0,0,DW,DH);
+  const d=dx.getImageData(0,0,DW,DH).data;
+  const col=new Float32Array(DW), row=new Float32Array(DH); let tot=0;
+  for(let y=0;y<DH;y++)for(let x=0;x<DW;x++){const i=(y*DW+x)*4;
+    if(isSkin(d[i],d[i+1],d[i+2])){col[x]++;row[y]++;tot++;}}
+  if(tot<DW*DH*0.02) return null;
+  const span=(a,fr)=>{const mx=Math.max(...a);let lo=0,hi=a.length-1;
+    while(lo<a.length&&a[lo]<mx*fr)lo++; while(hi>lo&&a[hi]<mx*fr)hi--; return[lo,hi];};
+  const [x0,x1]=span(col,.35),[y0,y1]=span(row,.35);
+  if(x1-x0<DW*.1||y1-y0<DH*.1) return null;
+  const b=[x0/DW,y0/DH,(x1-x0)/DW,(y1-y0)/DH];
+  BOX=BOX?BOX.map((v,i)=>v*.88+b[i]*.12):b;
+  return BOX;
+}
+const patchesFromBox=([x,y,w,h])=>[
+  [x+w*.28,y+h*.06,w*.44,h*.17],[x+w*.06,y+h*.46,w*.26,h*.17],[x+w*.68,y+h*.46,w*.26,h*.17]];
+
+// The phone shows the raw camera only - all annotation lives on the monitor.
+// Skipping it here also frees the phone's main thread, which is already busy
+// with mesh inference and the DSP.
+function drawOverlay(){}
+
+// ---- capture -------------------------------------------------------------
+const R=new RPPG();
+let FPS=0,fcount=0,lastFps=performance.now(),SKIN=0,GVAL=0,N_PIX=0,LAST=null,lastEst=0,lastPost=0;
+
+function sample(tsec){
+  try{
+    let ok=false;
+    const nowMs0=performance.now();
+    const needMesh = nowMs0 - lastMesh > MESH_MS;
+    if(FL && !needMesh && PATCH.length){ ok=true; }      // reuse the last mesh
+    else if(FL){
+      try{
+        lastMesh=nowMs0;
+        const r=FL.detectForVideo(V,performance.now());
+        const lm=r.faceLandmarks && r.faceLandmarks[0];
+        if(lm && lm.length>400 && lm[454] && lm[263]){
+          PATCH=patchesFromMesh(lm);
+          let x0=1,y0=1,x1=0,y1=0;
+          for(const p of lm){ x0=Math.min(x0,p.x); x1=Math.max(x1,p.x);
+                              y0=Math.min(y0,p.y); y1=Math.max(y1,p.y); }
+          BOX=[x0,y0,x1-x0,y1-y0];
+          KP=[33,133,362,263,1,168,10,152,61,291,50,280,105,334,205,425]
+             .map(i=>lm[i]).filter(Boolean).map(p=>({x:p.x,y:p.y}));
+          MESH=lm;
+          ok=true;
+        }
+      }catch(e){}
+    }
+    if(!ok && FD){
+      try{
+        const det=(FD.detectForVideo(V,performance.now()).detections||[])[0];
+        if(det&&det.keypoints&&det.keypoints.length>=2){
+          KP=det.keypoints; PATCH=patchesFromLandmarks(KP);
+          const b=det.boundingBox;
+          BOX=[b.originX/V.videoWidth,b.originY/V.videoHeight,
+               b.width/V.videoWidth,b.height/V.videoHeight];
+          ok=true;
+        }
+      }catch(e){}
+    }
+    if(!ok){ KP=null; const B=detectSkinBox(); if(B){PATCH=patchesFromBox(B);ok=true;} }
+    if(ok){
+      W=cv.width; H=cv.height;
+      cx.drawImage(V,0,0,W,H);
+      const nowMs=performance.now(), reMask=nowMs-maskAt>2000;
+      if(reMask){ maskAt=nowMs; MASKS=[]; }
+      const per=[]; let G=0,N=0,tot=0;
+      for(let p=0;p<PATCH.length;p++){
+        const [px,py,pw,ph]=PATCH[p];
+        const w=Math.max(1,pw*W|0), h=Math.max(1,ph*H|0);
+        const d=cx.getImageData(px*W|0,py*H|0,w,h).data, np=d.length/4;
+        let mk=(!reMask&&MASKS[p]&&MASKS[p].length===np)?MASKS[p]:null;
+        if(!mk){ mk=new Uint8Array(np); let c=0;
+          for(let i=0,k=0;i<d.length;i+=4,k++) if(isSkin(d[i],d[i+1],d[i+2])){mk[k]=1;c++;}
+          if(c<np*0.20) mk.fill(1);
+          MASKS[p]=mk; }
+        let r=0,g=0,b=0,n=0;
+        for(let i=0,k=0;i<d.length;i+=4,k++){ tot++;
+          if(mk[k]){ r+=d[i]; g+=d[i+1]; b+=d[i+2]; n++; } }
+        n=n||1; per.push([r/n,g/n,b/n]); G+=g; N+=n;
+      }
+      N=N||1; GVAL=G/N; SKIN=N/tot;
+  const scale=(V.videoHeight/cv.height)||1;
+  N_PIX=Math.round(N*scale*scale);       // sensor pixels behind the average
+      R.push(tsec, per);
+    }
+    fcount++;
+    const now=performance.now();
+    if(now-lastFps>1000){ FPS=fcount; fcount=0; lastFps=now;
+      say(`${FPS}fps · ${N_PIX}px · ${(SKIN*100).toFixed(0)}% skin · G=${GVAL.toFixed(0)}`
+          +(LAST?` · SNR ${LAST.snr.toFixed(1)}dB`:'')); }
+
+    if(tsec-lastEst>=HOP){
+      lastEst=tsec;
+      const e=R.estimate();
+      if(e){
+        LAST=e;
+        $('bpm').textContent=e.med?e.med.toFixed(0):'--';
+        $('bpm').className=e.good?'ok':'';
+        $('sub').textContent=`BPM   SNR ${e.snr>0?'+':''}${e.snr.toFixed(1)} dB`;
+        // The operator is looking at the monitor, not the phone (the back
+        // camera faces away), so this text is shipped rather than only shown.
+        const dark=GVAL<=55, blown=GVAL>=215;
+        WARN = FPS>0 && FPS<8 ? {t:`LOW FRAME RATE ${FPS} fps — aliasing, need >10`, s:'bad'}
+             : dark  ? {t:`TOO DARK — G=${GVAL.toFixed(0)}, need >55`, s:'bad'}
+             : blown ? {t:`OVEREXPOSED — G=${GVAL.toFixed(0)}, move back`, s:'bad'}
+             : N_PIX<45000 ? {t:`MOVE CLOSER — ${(N_PIX/1000).toFixed(0)}k px, want 60k+`, s:'warn'}
+             : SKIN<0.45 ? {t:'ROI OFF SKIN — centre your face', s:'warn'}
+             : e.good ? {t:'LOCKED', s:'ok'}
+                      : {t:`CONVERGING ${Math.round(e.settle*100)}% — hold still`, s:'warn'};
+        $('msg').textContent = WARN.t;
+        $('msg').className = WARN.s==='ok'?'ok':'';
+        if(now-lastPost>1000) { lastPost=now; post(tsec,e); }
+      }
+    }
+    drawOverlay();
+  }catch(err){ say('loop error: '+err.message); }
+  schedule();                       // ALWAYS reschedule, even after a throw
+}
+
+function post(tsec,e){ postData(tsec,e); }
+
+// Frame streaming runs on its own clock, ~10/s, as raw JPEG bytes. It is
+// skipped entirely once WebRTC is carrying the video.
+let framing=0, upOK=0, upTry=0, encMs=0, netMs=0, lastFreed=performance.now();
+const UPLOADS=6;                  // concurrent uploads, same reasoning as the PC
+setInterval(()=>{                 // watchdog against a leaked in-flight counter
+  if(framing>0 && performance.now()-lastFreed>4000){ framing=0; }
+},2000);
+function sendFrame(){
+  if(framing>=UPLOADS || RTC_STATE==='connected' || !V.videoWidth) return;
+  framing++; upTry++;
+  fx.drawImage(V,0,0,fc.width,fc.height);      // clean frame, no annotation
+  const t0=performance.now();
+  fc.toBlob(b=>{
+    encMs=performance.now()-t0;
+    if(!b){ framing--; lastFreed=performance.now(); return; }
+    const t1=performance.now();
+    fetch('/frame',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:b})
+      .then(()=>{ upOK++; netMs=performance.now()-t1; })
+      .catch(()=>{})
+      .finally(()=>{ framing--; lastFreed=performance.now(); });
+  },'image/jpeg',0.45);
+}
+// No video is streamed. The monitor draws the face from the mesh, so the phone
+// skips JPEG encoding entirely - which was the dominant cost in its loop and
+// the reason the camera was only managing ~10 fps.
+// setInterval(sendFrame,45);
+
+// Geometry is a few hundred bytes, so it can go at frame rate and lets the
+// monitor draw boxes and crosses over WebRTC video too.
+let geoN=0, geoBusy=false;
+let WARN={t:'starting',s:'warn'};
+function sendGeo(){
+  if(geoBusy || !PATCH.length) return;
+  geoBusy=true;
+  // 468 landmarks as 4-digit integers: ~4 KB instead of ~13 KB of floats,
+  // and an in-flight guard so a slow link throttles instead of queueing.
+  const withMesh = (geoN % 3)===0;
+  const mesh = (withMesh && MESH)
+    ? MESH.flatMap(p=>[Math.round(p.x*2048),Math.round(p.y*2048)]) : null;
+  fetch('/geo',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      box: BOX ? BOX.map(v=>+v.toFixed(4)) : null,
+      patches: PATCH.map(p=>p.map(v=>+v.toFixed(4))),
+      pts: (KP||[]).map(p=>[+p.x.toFixed(4),+p.y.toFixed(4)]),
+      mesh, q:2048,
+      mir: FACING==='user' ? 1 : 0,
+      good: LAST?LAST.good:false,
+      warn: WARN.t, ws: WARN.s, settle: LAST?+LAST.settle.toFixed(2):0,
+      g:+GVAL.toFixed(0), npix:N_PIX, skin:+SKIN.toFixed(2), fps:FPS,
+      n:++geoN})})
+    .catch(()=>{}).finally(()=>{ geoBusy=false; });
+}
+setInterval(sendGeo,110);
+
+function postData(tsec,e){
+  const step=Math.max(1,(e.sig.length/180)|0);
+  const wave=[]; for(let i=0;i<e.sig.length;i+=step) wave.push(+e.sig[i].toFixed(3));
+  let mx=0; for(const v of e.P) mx=Math.max(mx,v); mx=mx||1;
+  const ss=Math.max(1,(e.P.length/180)|0);
+  const spec=[]; for(let k=0;k<e.P.length;k+=ss) spec.push(+(e.P[k]/mx).toFixed(3));
+  const body={t:+tsec.toFixed(2), bpm:+e.med.toFixed(1), raw:+e.bpm.toFixed(1),
+    snr:+e.snr.toFixed(2), spread:+e.spread.toFixed(1), good:e.good,
+    g:+GVAL.toFixed(1), skin:+SKIN.toFixed(3), fps:FPS, npix:N_PIX,
+    res:`${V.videoWidth}x${V.videoHeight}`, track: MESH?'mesh':(FD?(KP?'blazeface':'searching'):'colour'),
+    dspv: (typeof DSP_VERSION!=='undefined'?DSP_VERSION:'OLD-no-version'),
+    rtc:RTC_STATE, up:upOK, uptry:upTry, enc:Math.round(encMs),
+    net:Math.round(netMs), inflight:framing, wave, spec};
+  fetch('/live',{method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify(body)}).catch(()=>{});
+}
+
+// ---- WebRTC sender ------------------------------------------------------
+// The JPEG path costs a full frame encode + upload per frame and tops out
+// around 1 fps through the tunnel. WebRTC sends real encoded video directly
+// to the PC, with only SDP/ICE passing through the server.
+let PC_=null, iceSent=0;
+async function startWebRTC(stream){
+  try{
+    if(PC_) PC_.close();
+    PC_=new RTCPeerConnection({iceServers:[
+      {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},
+      // STUN only discovers your public address; it cannot punch through the
+      // symmetric NAT a mobile carrier uses. A TURN relay forwards the media
+      // when a direct path is impossible. Open Relay is a free public TURN.
+      {urls:'turn:openrelay.metered.ca:80',
+       username:'openrelayproject', credential:'openrelayproject'},
+      {urls:'turn:openrelay.metered.ca:443',
+       username:'openrelayproject', credential:'openrelayproject'},
+      {urls:'turn:openrelay.metered.ca:443?transport=tcp',
+       username:'openrelayproject', credential:'openrelayproject'}],
+     iceCandidatePoolSize:4});
+    for(const tr of stream.getVideoTracks()) PC_.addTrack(tr, stream);
+    PC_.onicecandidate=e=>{ if(e.candidate)
+      sig({kind:'ice',role:'mobile',cand:e.candidate.toJSON()}); };
+    PC_.onconnectionstatechange=()=>{
+      RTC_STATE=PC_.connectionState;
+      say('rtc: '+RTC_STATE);
+      if(RTC_STATE==='failed'){ PC_.restartIce(); setTimeout(()=>startWebRTC(stream),4000); }
+    };
+    PC_.onicegatheringstatechange=()=>say('ice gather: '+PC_.iceGatheringState);
+    PC_.oniceconnectionstatechange=()=>say('ice: '+PC_.iceConnectionState);
+    const offer=await PC_.createOffer();
+    await PC_.setLocalDescription(offer);
+    await sig({kind:'offer',sdp:PC_.localDescription});
+    // wait for the PC's answer
+    let since=0, polls=0;
+    const poll=setInterval(async()=>{
+      try{
+        const r=await fetch('/sig?role=mobile&since='+since,{cache:'no-store'});
+        const s2=await r.json();
+        if(s2.answer && !PC_.currentRemoteDescription)
+          await PC_.setRemoteDescription(s2.answer);
+        for(const c of s2.ice||[]) { try{ await PC_.addIceCandidate(c); }catch(e){} }
+        since=s2.n||since;
+        RTC_STATE=PC_.connectionState;
+        // keep polling well past 'connected': relayed candidates often arrive
+        // late, and a dropped path needs the remaining ones to recover
+        if(++polls>60) clearInterval(poll);
+      }catch(e){}
+    },700);
+  }catch(e){ RTC_STATE='error'; }
+}
+const sig=b=>fetch('/sig',{method:'POST',headers:{'Content-Type':'application/json'},
+                          body:JSON.stringify(b)}).catch(()=>{});
+let RTC_STATE='idle';
+
+function schedule(){
+  if(V.requestVideoFrameCallback) V.requestVideoFrameCallback((n,m)=>sample(m.mediaTime));
+  else requestAnimationFrame(()=>sample(performance.now()/1000));
+}
+
+let FACING='environment', TORCH=true, STREAM=null, TRACK=null;
+
+const tries = f => [
+  {video:{facingMode:{ideal:f}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}},
+  {video:{facingMode:{ideal:f}, width:{ideal:640}, height:{ideal:480}}},
+  {video:{facingMode:{ideal:f}}}, {video:true}];
+
+// The rear camera has the better sensor AND the LED. A torch gives constant,
+// subject-locked illumination, so the exposure loop stops hunting - which is
+// worth more to SNR than anything the room lighting can do.
+async function setTorch(on){
+  if(!TRACK) return false;
+  const caps = TRACK.getCapabilities ? TRACK.getCapabilities() : {};
+  if(!caps.torch){ return false; }
+  try{ await TRACK.applyConstraints({advanced:[{torch:!!on}]}); return true; }
+  catch(e){ return false; }
+}
+
+async function openCamera(){
+  if(STREAM) STREAM.getTracks().forEach(t=>t.stop());
+  let st=null, err=null;
+  for(const c of tries(FACING)){
+    try{ st=await navigator.mediaDevices.getUserMedia(c); break; }catch(e){ err=e; }
+  }
+  if(!st){ $('msg').textContent='camera failed: '+(err&&err.name); return null; }
+  STREAM=st; TRACK=st.getVideoTracks()[0];
+  V.srcObject=st; try{ await V.play(); }catch(e){}
+  // only the selfie view should be mirrored
+  document.documentElement.style.setProperty('--mir', FACING==='user' ? -1 : 1);
+  try{ await TRACK.applyConstraints({advanced:[{whiteBalanceMode:'manual'}]}); }catch(e){}
+  await new Promise(r=>{ if(V.videoWidth) return r(); V.onloadedmetadata=r; setTimeout(r,4000); });
+  cv.height=ANA_H; cv.width=Math.round(ANA_H*V.videoWidth/V.videoHeight);
+  fc.height=288; fc.width=Math.round(288*V.videoWidth/V.videoHeight);
+
+  const okT = TORCH && FACING!=='user' ? await setTorch(true) : false;
+  $('bTorch').classList.toggle('on', okT);
+  $('bTorch').textContent = okT ? 'Torch ON'
+    : (FACING==='user' ? 'Torch n/a' : 'Torch off');
+  $('bBack').classList.toggle('on', FACING!=='user');
+  $('bFront').classList.toggle('on', FACING==='user');
+  R.t.length=0; R.g.forEach(a=>a.length=0); R.prior=0; R.hist.length=0;  // fresh buffers
+  MASKS=[]; BOX=null; PATCH=[];
+  return st;
+}
+
+async function switchTo(f){ FACING=f; await openCamera(); }
+$('bBack').onclick =()=>switchTo('environment');
+$('bFront').onclick=()=>switchTo('user');
+$('bTorch').onclick=async()=>{
+  TORCH=!TORCH;
+  const ok=await setTorch(TORCH);
+  $('bTorch').classList.toggle('on', ok && TORCH);
+  $('bTorch').textContent = ok ? (TORCH?'Torch ON':'Torch off')
+                               : 'Torch unsupported';
+};
+
+async function start(){
+  const st=await openCamera();
+  if(!st) return;
+  $('msg').textContent='acquiring…';
+  try{ await navigator.wakeLock.request('screen'); }catch(e){}
+  loadFD(); schedule();
+}
+start().catch(e=>$('msg').textContent='start failed: '+e.name);
+V.onclick=()=>start().catch(()=>{});
+</script>

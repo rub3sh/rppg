@@ -1,0 +1,408 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rPPG Monitor</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0e1116;color:#e6edf3;
+            font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+  #app{display:grid;gap:10px;padding:10px;grid-template-columns:1fr;
+       max-width:1500px;margin:0 auto}
+  @media(min-width:900px){#app{grid-template-columns:1.3fr 1fr;align-items:start}
+                          .span2{grid-column:1/-1}}
+  .panel{background:#161b22;border:1px solid #262d36;border-radius:10px;overflow:hidden}
+  .panel h3{margin:0;padding:8px 12px;font-size:11px;font-weight:600;letter-spacing:.08em;
+            text-transform:uppercase;color:#8b98a5;border-bottom:1px solid #262d36;
+            background:#1b222b;display:flex;justify-content:space-between}
+  #warn{padding:11px 14px;font-size:15px;font-weight:700;letter-spacing:.02em;
+        text-align:center;background:#2a323c;color:#adb9c6}
+  #warn.ok{background:#0d4a2b;color:#7ff0b0}
+  #warn.warn{background:#4a3a0d;color:#ffd76a}
+  #warn.bad{background:#4a1520;color:#ff8fa3}
+  .qual{display:flex;align-items:center;gap:10px;padding:8px 12px;
+        border-top:1px solid #262d36;font-size:11px;color:#8b98a5}
+  .bar{flex:1;height:9px;border-radius:5px;position:relative;overflow:hidden;
+       background:linear-gradient(90deg,#c0392b,#d68910,#27ae60)}
+  .bar i{position:absolute;inset:0 0 0 auto;background:#161b22;width:100%;transition:width .4s}
+
+  .hero{display:flex;align-items:center;justify-content:center;gap:20px;padding:16px 12px}
+  .lamps{display:flex;flex-direction:column;gap:14px}
+  .lamp{width:34px;height:34px;border-radius:50%;background:#2a323c;
+        border:2px solid #39424e;transition:.2s}
+  .lamp.r.on{background:#e82350;border-color:#ff6d8a;box-shadow:0 0 18px #e8235099}
+  .lamp.g.on{background:#22c55e;border-color:#6ee7a0;box-shadow:0 0 18px #22c55e99}
+  .heart{position:relative;width:190px;max-width:48vw;aspect-ratio:1/.92}
+  .heart svg{width:100%;height:100%;display:block;filter:drop-shadow(0 0 14px #e8235055);
+             transform-origin:50% 55%}
+  .heart.beat svg{animation:beat .55s ease-out}
+  @keyframes beat{0%{transform:scale(1)}18%{transform:scale(1.09)}100%{transform:scale(1)}}
+  .hnum{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;padding-top:6%}
+  .hnum b{font-size:38px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .hnum span{font-size:15px;opacity:.85}
+  #refbox{border-top:1px solid #262d36;padding:8px 12px 12px}
+  .refrow{display:flex;justify-content:space-between;align-items:baseline;
+          padding:4px 0;font-size:12px;color:#8b98a5;border-bottom:1px solid #1e252e}
+  .refrow:last-child{border-bottom:none}
+  .refrow b{font-family:ui-monospace,monospace;font-size:15px;color:#e6edf3;
+            font-variant-numeric:tabular-nums}
+  .refrow b.good{color:#22c55e} .refrow b.bad{color:#e0736c}
+  #hrnote{text-align:center;font-size:11.5px;color:#8b98a5;padding:0 12px 12px}
+
+  canvas.ch{width:100%;height:150px;display:block}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  td{padding:5px 12px;border-bottom:1px solid #1e252e;color:#adb9c6}
+  td:first-child{color:#8b98a5;width:55%}
+  td b{color:#e6edf3;font-weight:600;font-variant-numeric:tabular-nums}
+  .acc{padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .acc input{width:90px;padding:7px 9px;border-radius:7px;border:1px solid #2d3743;
+             background:#0e1116;color:#e6edf3;font-size:14px}
+  .acc button{padding:7px 12px;border-radius:7px;border:0;background:#22c55e;
+              color:#06240f;font-weight:700}
+  #accout{font-size:12px;color:#adb9c6;padding:0 12px 12px;line-height:1.7}
+  .big{font-size:16px;font-weight:700}
+</style>
+
+<div id="app">
+  <div class="panel">
+    <h3><span>Live stream from phone</span>
+        <span><button id="mirBtn" style="background:#2a323c;color:#adb9c6;border:0;
+          border-radius:5px;padding:2px 8px;font-size:10px;cursor:pointer;
+          margin-right:8px">MIRROR</button><span id="age">--</span></span></h3>
+    <div id="warn">waiting for the phone…</div>
+    <canvas id="ov" style="display:block;width:100%;background:#07090c"></canvas>
+    <div class="qual"><span>Signal quality</span><div class="bar"><i id="qfill"></i></div>
+      <span id="qtxt" style="min-width:64px;text-align:right">--</span></div>
+  </div>
+
+  <div class="panel">
+    <h3>Heart rate</h3>
+    <div class="hero">
+      <div class="lamps">
+        <div class="lamp r" id="lampR" title="no reliable signal"></div>
+        <div class="lamp g" id="lampG" title="locked"></div>
+      </div>
+      <div class="heart" id="heart">
+        <svg viewBox="0 0 100 92"><path fill="#e82350"
+          d="M50 88C25 70 4 52 4 31.5 4 16 16 5 29 5c9 0 16 5 21 12 5-7 12-12 21-12 13 0 25 11 25 26.5C96 52 75 70 50 88z"/></svg>
+        <div class="hnum"><b id="hr">--</b><span>bpm</span></div>
+      </div>
+    </div>
+    <div id="hrnote">waiting for the phone&hellip;</div>
+    <div id="refbox">
+      <div class="refrow"><span>Contact reference</span><b id="refbpm">--</b></div>
+      <div class="refrow"><span>Error (camera &minus; contact)</span><b id="referr">--</b></div>
+      <div class="refrow"><span>MAE this session</span><b id="refmae">--</b></div>
+      <div class="refrow"><span>Within &plusmn;5 BPM</span><b id="refhit">--</b></div>
+    </div>
+  </div>
+
+  <div class="panel span2"><h3>Heart rate over time</h3><canvas id="chHR" class="ch"></canvas></div>
+  <div class="panel"><h3>Pulse waveform</h3><canvas id="chWave" class="ch"></canvas></div>
+  <div class="panel"><h3>Spectrum (48&ndash;180 bpm)</h3><canvas id="chSpec" class="ch"></canvas></div>
+
+  <div class="panel span2"><h3>Accuracy check</h3>
+    <div class="acc">
+      <span>Count your pulse for 30 s, double it, enter it:</span>
+      <input id="ref" type="number" placeholder="bpm" inputmode="numeric">
+      <button id="cmp">Compare</button>
+    </div>
+    <div id="accout">No reference entered yet.</div>
+  </div>
+
+  <div class="panel span2"><h3>Acquisition</h3><table>
+    <tr><td>Reported rate (median of 8)</td><td><b id="i_bpm">--</b></td></tr>
+    <tr><td>Instantaneous rate</td><td><b id="i_raw">--</b></td></tr>
+    <tr><td>Window fill</td><td><b id="i_settle">--</b></td></tr>
+    <tr><td>Estimate spread</td><td><b id="i_spread">--</b></td></tr>
+    <tr><td>Pulse SNR</td><td><b id="i_snr">--</b></td></tr>
+    <tr><td>Frame rate</td><td><b id="i_fps">--</b></td></tr>
+    <tr><td>Video resolution</td><td><b id="i_res">--</b></td></tr>
+    <tr><td>ROI pixels sampled</td><td><b id="i_px">--</b></td></tr>
+    <tr><td>Skin coverage</td><td><b id="i_skin">--</b></td></tr>
+    <tr><td>Mean green level</td><td><b id="i_g">--</b></td></tr>
+    <tr><td>Face tracking</td><td><b id="i_track">--</b></td></tr>
+    <tr><td>Phone upload</td><td><b id="i_up">--</b></td></tr>
+    <tr><td>Method</td><td><b>GREEN &times;3 ROI &rarr; NUDFT + prior</b></td></tr>
+  </table></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let TREND=[], NOW=null, lastBeat=0, lastT=null, stale=0;
+
+function chart(cvs,draw){
+  const r=cvs.getBoundingClientRect(), dpr=devicePixelRatio||1;
+  if(!r.width) return;
+  if(cvs.width!==r.width*dpr||cvs.height!==r.height*dpr){
+    cvs.width=r.width*dpr; cvs.height=r.height*dpr; }
+  const c=cvs.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0);
+  c.clearRect(0,0,r.width,r.height);
+  try{ draw(c,r.width,r.height); }catch(e){}
+}
+function grid(c,w,h,lo,hi,label){
+  c.strokeStyle='#222a33'; c.lineWidth=1;
+  c.fillStyle='#6e7b8a'; c.font='10px ui-monospace,monospace';
+  for(let i=0;i<=4;i++){ const y=8+i/4*(h-26);
+    c.beginPath(); c.moveTo(34,y); c.lineTo(w-6,y); c.stroke();
+    c.fillText((hi-(hi-lo)*i/4).toFixed(0).padStart(3),4,y+3); }
+  if(label) c.fillText(label,36,h-4);
+}
+function drawHR(){
+  chart($('chHR'),(c,w,h)=>{
+    const pts=TREND.filter(p=>p[1]>0);
+    if(pts.length<2) return;
+    const vs=pts.map(p=>p[1]);
+    const lo=Math.max(30,Math.min(...vs)-6), hi=Math.min(200,Math.max(...vs)+6);
+    grid(c,w,h,lo,hi,`${pts.length} samples`);
+    const X=i=>34+i/(pts.length-1)*(w-42), Y=v=>8+(hi-v)/((hi-lo)||1)*(h-26);
+    c.beginPath(); c.lineWidth=1.9;
+    pts.forEach((p,i)=>{ const y=Y(p[1]); i?c.lineTo(X(i),y):c.moveTo(X(i),y); });
+    c.strokeStyle='#e82350'; c.stroke();
+    pts.forEach((p,i)=>{ if(p[2]>0){ c.fillStyle='#22c55e';
+      c.beginPath(); c.arc(X(i),Y(p[1]),1.8,0,7); c.fill(); } });
+  });
+}
+function drawWave(){
+  chart($('chWave'),(c,w,h)=>{
+    const x=NOW&&NOW.wave; if(!x||x.length<2) return;
+    let mx=0; for(const v of x) mx=Math.max(mx,Math.abs(v)); mx=mx||1;
+    c.strokeStyle='#222a33'; c.beginPath(); c.moveTo(0,h/2); c.lineTo(w,h/2); c.stroke();
+    c.beginPath(); c.strokeStyle='#e82350'; c.lineWidth=1.6;
+    x.forEach((v,i)=>{ const px=i/(x.length-1)*w, py=h/2-v/mx*(h/2-8);
+      i?c.lineTo(px,py):c.moveTo(px,py); });
+    c.stroke();
+    c.fillStyle='#6e7b8a'; c.font='10px ui-monospace,monospace'; c.fillText('15 s window',4,h-4);
+  });
+}
+function drawSpec(){
+  chart($('chSpec'),(c,w,h)=>{
+    const P=NOW&&NOW.spec; if(!P||P.length<2) return;
+    c.beginPath(); c.strokeStyle='#e82350'; c.lineWidth=1.5;
+    P.forEach((v,k)=>{ const x=k/(P.length-1)*w, y=h-8-v*(h-22);
+      k?c.lineTo(x,y):c.moveTo(x,y); });
+    c.stroke();
+    if(NOW&&NOW.bpm){ const f=(NOW.bpm/60-0.8)/(3.0-0.8)*w;
+      c.strokeStyle='#22c55e'; c.setLineDash([3,3]); c.lineWidth=1;
+      c.beginPath(); c.moveTo(f,4); c.lineTo(f,h-8); c.stroke(); c.setLineDash([]); }
+    c.fillStyle='#6e7b8a'; c.font='10px ui-monospace,monospace';
+    c.fillText('48',2,h-2); c.fillText('180 bpm',w-46,h-2);
+  });
+}
+
+function render(){
+  const d=NOW;
+  const live = d && stale < 4;
+  // red / green indicator: green only on a confident, current lock
+  $('lampG').classList.toggle('on', !!(live && d.good));
+  $('lampR').classList.toggle('on', !(live && d.good));
+  if(!d){ $('hrnote').textContent='waiting for the phone…'; return; }
+
+  // one decimal: the value is now smoothed, so it reads as a measurement
+  // easing rather than an integer flickering between two neighbours
+  $('hr').textContent = d.bpm ? d.bpm.toFixed(1) : '--';
+  $('hrnote').textContent = !live ? 'stream stalled - is the phone page open?'
+      : d.good ? 'stable lock'
+      : d.g<=55 ? 'insufficient light on the subject'
+      : 'converging - hold still';
+  if(live && d.good && d.bpm>0 && performance.now()-lastBeat>60000/d.bpm){
+    lastBeat=performance.now();
+    const el=$('heart'); el.classList.remove('beat'); void el.offsetWidth; el.classList.add('beat');
+  }
+  const q=Math.max(0,Math.min(1,(d.snr+5)/10));
+  $('qfill').style.width=(100-q*100)+'%';
+  $('qtxt').textContent=`${d.snr>0?'+':''}${d.snr.toFixed(1)} dB`;
+
+  $('i_bpm').textContent   = d.bpm.toFixed(1)+' bpm';
+  $('i_raw').textContent   = d.raw.toFixed(1)+' bpm';
+  $('i_spread').textContent= d.spread.toFixed(1)+' bpm';
+  $('i_settle').textContent= GEO&&GEO.settle!==undefined
+    ? Math.round(GEO.settle*100)+' % of 15 s' : '--';
+  $('i_snr').textContent   = `${d.snr>0?'+':''}${d.snr.toFixed(2)} dB`;
+  $('i_fps').textContent   = d.fps+' fps';
+  $('i_res').textContent   = d.res||'--';
+  $('i_px').textContent    = (d.npix||0).toLocaleString();
+  $('i_skin').textContent  = (d.skin*100).toFixed(0)+' %';
+  $('i_g').textContent     = d.g.toFixed(0)+' / 255';
+  $('i_track').textContent = d.track||'--';
+  $('i_up').textContent = d.enc!==undefined
+    ? `encode ${d.enc} ms · post ${d.net} ms · ${d.inflight} in flight`
+    : '--';
+  $('age').textContent = live ? 'live · mesh' : 'stalled';
+  drawHR(); drawWave(); drawSpec();
+}
+
+// Paired samples: camera estimate and contact reference at the same instant.
+// Only confident camera estimates are scored, which is what a datasheet MAE
+// means - the device reports a number and is judged on it.
+const PAIRS=[];
+function scoreRef(d, ref){
+  const rb=$('refbpm'), re=$('referr'), rm=$('refmae'), rh=$('refhit');
+  if(!ref || !ref.bpm || (Date.now()/1000 - ref.ts) > 5){
+    rb.textContent='--'; rb.className=''; re.textContent='--'; re.className='';
+    return;
+  }
+  rb.textContent=ref.bpm.toFixed(1);
+  if(!d || !d.bpm || !d.good) { re.textContent='--'; re.className=''; return; }
+  const err=d.bpm-ref.bpm;
+  re.textContent=(err>=0?'+':'')+err.toFixed(1);
+  re.className=Math.abs(err)<=5?'good':'bad';
+  PAIRS.push(Math.abs(err)); if(PAIRS.length>600) PAIRS.shift();
+  const mae=PAIRS.reduce((a,b)=>a+b,0)/PAIRS.length;
+  rm.textContent=mae.toFixed(2)+' bpm';
+  rm.className=mae<=5?'good':'bad';
+  const hit=100*PAIRS.filter(v=>v<=5).length/PAIRS.length;
+  rh.textContent=hit.toFixed(0)+' %  (n='+PAIRS.length+')';
+  rh.className=hit>=80?'good':'bad';
+}
+
+async function poll(){
+  try{
+    const r=await fetch('/latest',{cache:'no-store'});
+    const s=await r.json();
+    if(s.now){
+      if(lastT===s.now.t) stale++; else { stale=0; lastT=s.now.t; }
+      NOW=Object.assign({},s.now,{wave:s.wave,spec:s.spec});
+      TREND=s.trend||[];
+      scoreRef(NOW, s.ref);
+    }
+    render();
+  }catch(e){}
+}
+setInterval(poll,500); poll();
+
+// Chained loading rather than a fixed interval: the next frame is requested the
+// instant the previous one paints, so the rate self-tunes to the link.
+
+
+
+// ---- ROI overlay --------------------------------------------------------
+// Geometry arrives normalised to the camera frame, so it is mapped through the
+// DISPLAYED rectangle of whichever source is showing - object-fit:contain
+// letterboxes, and the phone's front camera is mirrored.
+let GEO=null, TESS=null, geoBusy=false;
+// The phone reports how it framed the image, but which way round it *looks*
+// right on the monitor is a viewing preference - so allow an override that
+// flips picture and overlay together.
+let MIRFLIP=false;
+document.addEventListener('DOMContentLoaded',()=>{
+  const b=document.getElementById('mirBtn');
+  if(!b) return;
+  b.onclick=()=>{
+    MIRFLIP=!MIRFLIP;
+    b.style.background=MIRFLIP?'#22c55e':'#2a323c';
+    b.style.color=MIRFLIP?'#06240f':'#adb9c6';
+  };
+});
+
+// The tessellation is a static index list inside tasks-vision - importing the
+// module gives us the ~2600 mesh edges without loading any model or WASM.
+(async()=>{
+  try{
+    const M=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    TESS=M.FaceLandmarker.FACE_LANDMARKS_TESSELATION;
+  }catch(e){}
+})();
+
+async function pollGeo(){
+  if(geoBusy) return;
+  geoBusy=true;
+  try{
+    const g=await (await fetch('/geo',{cache:'no-store'})).json();
+    // the phone sends the mesh on every third update; keep the last one so the
+    // render stays continuous between them
+    if(!g.mesh && GEO && GEO.mesh){ g.mesh=GEO.mesh; g.q=GEO.q; }
+    GEO=g;
+    const w=$('warn');
+    if(GEO && GEO.warn){
+      w.textContent = GEO.warn
+        + (GEO.g!==undefined ? `   ·   G ${GEO.g}   ${(GEO.npix/1000).toFixed(0)}k px`
+                             + `   ${Math.round(GEO.skin*100)}% skin   ${GEO.fps} fps` : '');
+      w.className = GEO.ws || 'warn';
+    }
+  }catch(e){}
+  geoBusy=false;
+}
+setInterval(pollGeo,120); pollGeo();
+
+function drawROI(){
+  requestAnimationFrame(drawROI);
+  const c=$('ov');
+  const ew=c.clientWidth;
+  if(!ew) return;
+  // Aspect comes from the phone's reported camera resolution; with no video to
+  // letterbox against, the canvas simply IS the frame.
+  let ar=3/4;
+  if(NOW && NOW.res){ const p=NOW.res.split('x').map(Number); if(p[1]) ar=p[0]/p[1]; }
+  // A portrait phone frame at full panel width is enormous on a laptop, so
+  // clamp the height and letterbox the mesh inside it.
+  const maxH=Math.min(430, Math.round(innerHeight*0.46));
+  const eh=Math.min(maxH, Math.round(ew/ar));
+  const dpr=devicePixelRatio||1;
+  if(c.width!==ew*dpr||c.height!==eh*dpr){ c.width=ew*dpr; c.height=eh*dpr;
+                                           c.style.height=eh+'px'; }
+  let dw=eh*ar, dh=eh;
+  if(dw>ew){ dw=ew; dh=ew/ar; }
+  const ox=(ew-dw)/2, oy=(eh-dh)/2;
+  const g=c.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.fillStyle='#07090c'; g.fillRect(0,0,ew,eh);
+  if(!GEO||!GEO.mesh){
+    g.fillStyle='#3a444f'; g.font='13px system-ui';
+    g.fillText('waiting for the phone…',14,26);
+    return;
+  }
+  const mir=(GEO.mir?1:0)^(MIRFLIP?1:0);
+  const MX=nx=>ox+(mir?(1-nx):nx)*dw, MY=ny=>oy+ny*dh;
+  const rect=(x,y,w,h)=>g.strokeRect(mir?MX(x+w):MX(x), MY(y), w*dw, h*dh);
+
+  const q=GEO.q||2048, m=GEO.mesh, N=m.length/2;
+  const PX=i=>MX(m[i*2]/q), PY=i=>MY(m[i*2+1]/q);
+
+  g.strokeStyle='rgba(255,214,0,.42)';
+  g.lineWidth=Math.max(.4,dw/1500);
+  if(TESS){
+    g.beginPath();
+    for(const co of TESS){
+      if(co.start>=N||co.end>=N) continue;
+      g.moveTo(PX(co.start),PY(co.start));
+      g.lineTo(PX(co.end),  PY(co.end));
+    }
+    g.stroke();
+  }
+  g.fillStyle='rgba(255,230,90,.95)';          // the 468 points
+  const r=Math.max(.8,dw/900);
+  for(let i=0;i<N;i++){ g.beginPath(); g.arc(PX(i),PY(i),r,0,7); g.fill(); }
+
+  if(GEO.patches){                              // ROI boxes
+    g.strokeStyle='rgba(255,214,0,.95)';
+    g.lineWidth=Math.max(1.4,dw/420);
+    GEO.patches.forEach(p=>rect(...p));
+  }
+  g.fillStyle='rgba(255,214,0,.55)';
+  g.font='11px ui-monospace,monospace';
+  g.fillText(`${N} landmarks`,10,eh-10);
+}
+requestAnimationFrame(drawROI);
+
+$('cmp').onclick=()=>{
+  const ref=parseFloat($('ref').value);
+  if(!ref){ $('accout').textContent='Enter your counted pulse first.'; return; }
+  const good=TREND.filter(p=>p[2]>0).map(p=>p[1]);
+  const all=TREND.map(p=>p[1]).filter(v=>v>0);
+  const use=good.length>=5?good:all;
+  if(!use.length){ $('accout').textContent='No measurements collected yet.'; return; }
+  const mean=use.reduce((a,b)=>a+b,0)/use.length;
+  const srt=[...use].sort((a,b)=>a-b), med=srt[srt.length>>1];
+  const mae=use.reduce((a,b)=>a+Math.abs(b-ref),0)/use.length;
+  const rmse=Math.sqrt(use.reduce((a,b)=>a+(b-ref)**2,0)/use.length);
+  const within3=100*use.filter(v=>Math.abs(v-ref)<=3).length/use.length;
+  const within5=100*use.filter(v=>Math.abs(v-ref)<=5).length/use.length;
+  $('accout').innerHTML =
+    `<span class="big">Error ${(med-ref>=0?'+':'')}${(med-ref).toFixed(1)} bpm</span> `
+    +`(median ${med.toFixed(1)} vs reference ${ref})<br>`
+    +`MAE ${mae.toFixed(2)} bpm &nbsp;·&nbsp; RMSE ${rmse.toFixed(2)} bpm &nbsp;·&nbsp; `
+    +`mean ${mean.toFixed(1)} bpm<br>`
+    +`Within &plusmn;3 bpm: ${within3.toFixed(0)}% &nbsp;·&nbsp; within &plusmn;5 bpm: ${within5.toFixed(0)}%<br>`
+    +`n = ${use.length} ${good.length>=5?'confident':'total'} estimates`;
+};
+</script>

@@ -1,0 +1,25 @@
+# MQTT broker for the pulse-oximeter stack.
+#
+# The ESP32 connects from the LAN, so the port is bound on all interfaces and
+# anonymous clients are allowed. That is fine on a home network and wrong
+# anywhere else: to lock it down, bind "127.0.0.1:1883:1883" and put the
+# firmware on the same host, or add a password file and set allow_anonymous
+# false in config/mosquitto.conf.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: pulseox-mqtt
+    restart: unless-stopped
+    ports:
+      # Host port is configurable because 1883 is often already taken by
+      # another broker; set MQTT_PORT in broker/.env and point the firmware
+      # and server at the same number.
+      - "0.0.0.0:${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:

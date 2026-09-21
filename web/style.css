@@ -1,0 +1,107 @@
+/* Dark-only dashboard: this thing is read in a dim room with a finger on a
+   sensor. Colours are the validated dark steps — aqua carries "pulse"
+   everywhere it appears, blue carries "oxygen", and the four status hues are
+   reserved for state and never used as series colours. */
+:root {
+  color-scheme: dark;
+  --plane:      #0d0d0d;
+  --surface:    #1a1a19;
+  --ink:        #ffffff;
+  --ink-2:      #c3c2b7;
+  --ink-muted:  #898781;
+  --grid:       #2c2c2a;
+  --axis:       #383835;
+  --hairline:   rgba(255, 255, 255, 0.10);
+
+  --pulse:      #199e70;   /* heart rate + pleth */
+  --oxygen:     #3987e5;   /* SpO2 */
+
+  --good:       #0ca30c;
+  --warning:    #fab219;
+  --serious:    #ec835a;
+  --critical:   #d03b3b;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 16px;
+}
+.wrap { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+/* ---- header ---- */
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.spacer { flex: 1; }
+select {
+  background: var(--surface); color: var(--ink); border: 1px solid var(--hairline);
+  border-radius: 7px; padding: 5px 8px; font: inherit; font-size: 12px;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--ink-2);
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 4px 10px;
+  background: var(--surface);
+}
+/* Status is icon + label + colour, never colour alone. */
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-muted); }
+.chip[data-state="live"]    .dot { background: var(--good); }
+.chip[data-state="stale"]   .dot { background: var(--warning); }
+.chip[data-state="offline"] .dot { background: var(--critical); }
+
+/* ---- stat tiles ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-height: 92px;
+}
+.tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.tile .value { font-size: 38px; font-weight: 600; line-height: 1.05; color: var(--ink); }
+.tile .value.small { font-size: 24px; font-weight: 500; }
+.tile .unit { font-size: 13px; color: var(--ink-muted); font-weight: 400; margin-left: 3px; }
+.tile .note { font-size: 11px; color: var(--ink-muted); margin-top: auto; }
+.tile.stale .value { color: var(--ink-muted); }
+/* A coloured rule ties the tile to its series colour without tinting the text. */
+.tile.pulse  { box-shadow: inset 3px 0 0 var(--pulse); }
+.tile.oxygen { box-shadow: inset 3px 0 0 var(--oxygen); }
+
+/* ---- chart cards ---- */
+.card {
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px;
+  padding: 12px 14px 8px; position: relative;
+}
+.card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+.card .sub { font-size: 11px; color: var(--ink-muted); margin: 0 0 8px; }
+.card canvas { display: block; width: 100%; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }
+
+.ranges { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink-muted); }
+.ranges button {
+  background: transparent; color: var(--ink-2); border: 1px solid var(--hairline);
+  border-radius: 7px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.ranges button[aria-pressed="true"] { background: #262624; border-color: var(--ink-muted); color: var(--ink); }
+
+/* ---- tooltip ---- */
+.tip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .08s;
+  background: #232321; border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 6px 9px; font-size: 12px; color: var(--ink); white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0,0,0,.45); z-index: 3;
+}
+.tip .t { color: var(--ink-muted); font-size: 11px; display: block; }
+.tip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---- table view (the non-colour reading of the same data) ---- */
+details { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 10px 14px; }
+summary { cursor: pointer; font-size: 12px; color: var(--ink-2); }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-muted); font-weight: 500; }
+
+footer { color: var(--ink-muted); font-size: 11px; padding-bottom: 8px; }
